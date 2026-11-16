@@ -19,6 +19,7 @@ from .telephony import (
     reply_twiml,
     twilio_configured,
 )
+from .verticals import active_vertical, business_name, catalog
 
 telephony = TwilioProvider() if twilio_configured() else NotConfigured()
 calendar = NotConfigured()
@@ -54,7 +55,19 @@ class FileWrite(BaseModel):
 
 @app.get("/health")
 async def health():
-    return {"status":"ok","service":settings.app_name}
+    v = active_vertical()
+    return {
+        "status": "ok",
+        "service": settings.app_name,
+        "vertical": v.key,
+        "vertical_name": v.name,
+        "business": business_name(v),
+    }
+
+@app.get("/v1/verticals", dependencies=[Depends(auth)])
+async def verticals():
+    v = active_vertical()
+    return {"active": v.key, "business": business_name(v), "verticals": catalog()}
 
 @app.post("/v1/assistant/chat", dependencies=[Depends(auth)])
 async def chat(body: ChatIn):
@@ -198,6 +211,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   </section>
 
   <section class="card">
+    <h2>Vertical market</h2>
+    <div id="verticalActive">Checking…</div>
+    <ul id="verticals"><li class="muted">Enter the API key to browse every market this agent can work in.</li></ul>
+    <p class="muted" style="font-size:12px">To switch markets, set AGENT_VERTICAL to a market key in the host's environment settings (and BUSINESS_NAME to the business name), then restart or redeploy. The greeting, the services and the booking questions all follow the market.</p>
+  </section>
+
+  <section class="card">
     <h2>Tasks</h2>
     <div class="row">
       <input id="taskTitle" placeholder="New task title">
@@ -229,14 +249,27 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 const $ = id => document.getElementById(id);
 const key = () => localStorage.getItem('aptivo_api_key') || '';
 $('key').value = key();
-$('saveKey').onclick = () => { localStorage.setItem('aptivo_api_key', $('key').value.trim()); loadTasks(); };
+$('saveKey').onclick = () => { localStorage.setItem('aptivo_api_key', $('key').value.trim()); loadTasks(); loadVerticals(); };
 const headers = () => ({ 'Content-Type': 'application/json', 'X-API-Key': key() });
 
 async function loadHealth() {
   try {
     const r = await fetch('/health'); const j = await r.json();
     $('health').innerHTML = '<span class="ok">● Online</span> — ' + j.service;
-  } catch (e) { $('health').innerHTML = '<span class="bad">● Offline</span>'; }
+    $('verticalActive').innerHTML = 'Active market: <strong>' + j.vertical_name.replace(/</g,'&lt;') + '</strong>' +
+      ' <span class="muted">(' + j.vertical + ') for ' + j.business.replace(/</g,'&lt;') + '</span>';
+  } catch (e) { $('health').innerHTML = '<span class="bad">● Offline</span>'; $('verticalActive').textContent = 'Could not check.'; }
+}
+async function loadVerticals() {
+  if (!key()) return;
+  try {
+    const r = await fetch('/v1/verticals', { headers: headers() });
+    const j = await r.json();
+    $('verticals').innerHTML = j.verticals.map(v =>
+      '<li>' + (v.key === j.active ? '<strong>' : '') + v.name.replace(/</g,'&lt;') +
+      (v.key === j.active ? ' — active</strong>' : '') +
+      ' <span class="muted">' + v.key + ' — ' + v.tagline.replace(/</g,'&lt;') + '</span></li>').join('');
+  } catch (e) { $('verticals').innerHTML = '<li class="bad">Could not load markets.</li>'; }
 }
 async function loadTasks() {
   if (!key()) return;
@@ -271,7 +304,7 @@ $('callBtn').onclick = async () => {
     $('callOut').textContent = j.detail || JSON.stringify(j);
   } catch (e) { $('callOut').textContent = 'Call request failed.'; }
 };
-loadHealth(); loadTasks();
+loadHealth(); loadTasks(); loadVerticals();
 </script>
 </body>
 </html>

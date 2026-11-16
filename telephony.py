@@ -3,15 +3,17 @@
 Implements the TelephonyProvider protocol from integrations.py using
 Twilio's REST API over httpx (no Twilio SDK). Outbound calls point Twilio
 at this app's /v1/calls/voice webhook; inbound calls handed to
-handle_inbound get the same flow. The flow greets the caller as Aptivo,
-gathers speech, answers with agent.answer() (the Groq-backed brain, wired
-in main.py), and loops until the caller says goodbye or stops answering.
+handle_inbound get the same flow. The flow greets the caller with the
+active vertical's greeting (verticals.py), gathers speech, answers with
+agent.answer() (the Groq-backed brain, wired in main.py), and loops until
+the caller says goodbye or stops answering.
 """
 from xml.sax.saxutils import escape
 
 import httpx
 
 from .config import settings
+from .verticals import greeting_text
 
 XML_DECL = '<?xml version="1.0" encoding="UTF-8"?>'
 GATHER_ACTION = "/v1/calls/gather"
@@ -43,9 +45,9 @@ def _response(*verbs: str) -> str:
 
 
 def greeting_twiml() -> str:
-    """Opening TwiML: greet as Aptivo and gather the caller's request."""
+    """Opening TwiML: greet with the active vertical's greeting, then gather."""
     return _response(
-        _say("Hello, this is Aptivo, your assistant."),
+        _say(greeting_text()),
         _gather(GATHER_ACTION, "How can I help you today?"),
         _say("I didn't hear anything. Goodbye."),
         "<Hangup/>",

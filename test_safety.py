@@ -1,4 +1,4 @@
-from app.filesystem import safe_path
+from .filesystem import safe_path
 import pytest
 
 def test_rejects_path_traversal():

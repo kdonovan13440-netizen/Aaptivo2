@@ -11,4 +11,8 @@ RUN pip install --no-cache-dir -r Aaptivo2/requirements.txt
 
 EXPOSE 8000
 
-CMD ["uvicorn", "Aaptivo2.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Hosts like Render assign the port through the PORT env var and scan that
+# port to decide the deploy is live. A hardcoded 8000 makes the deploy
+# report "no open ports detected", so honor PORT and fall back to 8000
+# for local runs. Shell form is required for the variable to expand.
+CMD uvicorn Aaptivo2.main:app --host 0.0.0.0 --port ${PORT:-8000}
