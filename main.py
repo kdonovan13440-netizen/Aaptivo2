@@ -1,7 +1,8 @@
 import json
 import secrets
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, Header, HTTPException
+from fastapi import FastAPI, Depends, Header, HTTPException, Request
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from .config import settings
@@ -10,8 +11,16 @@ from .models import Task, ActionRequest
 from .agent import answer
 from .filesystem import list_files, read_text, write_text
 from .integrations import NotConfigured
+from .telephony import (
+    TwilioProvider,
+    closing_twiml,
+    greeting_twiml,
+    reprompt_twiml,
+    reply_twiml,
+    twilio_configured,
+)
 
-telephony = NotConfigured()
+telephony = TwilioProvider() if twilio_configured() else NotConfigured()
 calendar = NotConfigured()
 
 @asynccontextmanager
@@ -98,11 +107,38 @@ async def file_write(body: FileWrite):
 
 @app.post("/v1/calls/inbound")
 async def inbound_call(payload: dict):
-    return await telephony.handle_inbound(payload)
+    result = await telephony.handle_inbound(payload)
+    if isinstance(result, dict) and "twiml" in result:
+        return Response(content=result["twiml"], media_type="application/xml")
+    return result
+
+@app.post("/v1/calls/voice")
+async def call_voice():
+    # Twilio webhook (no API key: Twilio cannot send one). Opens the
+    # conversation flow: greeting plus a speech gather.
+    return Response(content=greeting_twiml(), media_type="application/xml")
+
+@app.post("/v1/calls/gather")
+async def call_gather(request: Request, retry: int = 0):
+    # Twilio posts the caller's speech as the SpeechResult form field.
+    form = await request.form()
+    speech = str(form.get("SpeechResult") or "").strip()
+    if not speech:
+        if retry >= 1:
+            return Response(content=closing_twiml(), media_type="application/xml")
+        return Response(content=reprompt_twiml(), media_type="application/xml")
+    if "goodbye" in speech.lower():
+        return Response(content=closing_twiml(), media_type="application/xml")
+    return Response(content=reply_twiml(answer(speech)), media_type="application/xml")
 
 @app.post("/v1/calls/outbound", dependencies=[Depends(auth)])
 async def outbound_call(to_number: str, purpose: str):
-    raise HTTPException(501,"No live calling provider configured. Configure a provider adapter and consent workflow first.")
+    if not twilio_configured():
+        raise HTTPException(501,"No live calling provider configured. Configure a provider adapter and consent workflow first.")
+    try:
+        return await telephony.place_call(to_number, purpose)
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
 
 @app.get("/v1/calendar/events", dependencies=[Depends(auth)])
 async def calendar_events(start: str, end: str):
@@ -117,3 +153,134 @@ async def calendar_create(event: dict):
         return await calendar.create_event(event)
     except RuntimeError as e:
         raise HTTPException(501,str(e))
+
+
+DASHBOARD_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aptivo Agent — Dashboard</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; background: #0f1420; color: #e8ecf3; }
+  header { padding: 20px 24px 8px; }
+  h1 { margin: 0; font-size: 22px; }
+  .sub { color: #9aa7bd; font-size: 13px; margin-top: 4px; }
+  main { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); padding: 16px 24px 24px; }
+  .card { background: #182034; border: 1px solid #26314d; border-radius: 12px; padding: 16px; }
+  .card h2 { margin: 0 0 10px; font-size: 15px; }
+  .ok { color: #4ade80; } .bad { color: #f87171; } .muted { color: #9aa7bd; }
+  input, textarea, button { font: inherit; border-radius: 8px; border: 1px solid #33415e; background: #0f1420; color: #e8ecf3; padding: 8px 10px; }
+  button { background: #2f6df6; border-color: #2f6df6; color: #fff; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 8px; } .row > * { flex: 1; }
+  ul { margin: 8px 0 0; padding-left: 18px; } li { margin: 4px 0; }
+  pre { white-space: pre-wrap; word-break: break-word; background: #0f1420; border-radius: 8px; padding: 10px; min-height: 40px; }
+  label { font-size: 12px; color: #9aa7bd; display: block; margin-bottom: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Aptivo Agent</h1>
+  <div class="sub">Dashboard — service status, tasks, chat and calls</div>
+</header>
+<main>
+  <section class="card">
+    <h2>Service</h2>
+    <div id="health">Checking…</div>
+    <div style="margin-top:12px">
+      <label for="key">API key (needed for tasks, chat and calls)</label>
+      <div class="row">
+        <input id="key" type="password" placeholder="X-API-Key" autocomplete="off">
+        <button id="saveKey" style="flex:0 0 auto">Save</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Tasks</h2>
+    <div class="row">
+      <input id="taskTitle" placeholder="New task title">
+      <button id="addTask" style="flex:0 0 auto">Add</button>
+    </div>
+    <ul id="tasks"><li class="muted">Enter the API key, then tasks load here.</li></ul>
+  </section>
+
+  <section class="card">
+    <h2>Chat with Aptivo</h2>
+    <div class="row">
+      <input id="chatIn" placeholder="Say something…">
+      <button id="sendChat" style="flex:0 0 auto">Send</button>
+    </div>
+    <pre id="chatOut" class="muted">Replies appear here. Needs the API key, and a GROQ_API_KEY on the server for AI answers.</pre>
+  </section>
+
+  <section class="card">
+    <h2>Calls</h2>
+    <div class="row">
+      <input id="callTo" placeholder="Phone number">
+      <input id="callWhy" placeholder="Purpose">
+    </div>
+    <button id="callBtn" style="margin-top:8px">Request outbound call</button>
+    <pre id="callOut" class="muted">No telephony provider is configured yet, so calls will report that honestly instead of pretending to dial.</pre>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const key = () => localStorage.getItem('aptivo_api_key') || '';
+$('key').value = key();
+$('saveKey').onclick = () => { localStorage.setItem('aptivo_api_key', $('key').value.trim()); loadTasks(); };
+const headers = () => ({ 'Content-Type': 'application/json', 'X-API-Key': key() });
+
+async function loadHealth() {
+  try {
+    const r = await fetch('/health'); const j = await r.json();
+    $('health').innerHTML = '<span class="ok">● Online</span> — ' + j.service;
+  } catch (e) { $('health').innerHTML = '<span class="bad">● Offline</span>'; }
+}
+async function loadTasks() {
+  if (!key()) return;
+  try {
+    const r = await fetch('/v1/tasks', { headers: headers() });
+    const j = await r.json();
+    $('tasks').innerHTML = (j.length ? '' : '<li class="muted">No tasks yet.</li>') +
+      j.map(t => '<li>' + t.title.replace(/</g,'&lt;') + ' <span class="muted">(' + t.status + ')</span></li>').join('');
+  } catch (e) { $('tasks').innerHTML = '<li class="bad">Could not load tasks.</li>'; }
+}
+$('addTask').onclick = async () => {
+  const title = $('taskTitle').value.trim(); if (!title) return;
+  await fetch('/v1/tasks', { method: 'POST', headers: headers(), body: JSON.stringify({ title }) });
+  $('taskTitle').value = ''; loadTasks();
+};
+$('sendChat').onclick = async () => {
+  const msg = $('chatIn').value.trim(); if (!msg) return;
+  $('chatOut').textContent = '…';
+  try {
+    const r = await fetch('/v1/assistant/chat', { method: 'POST', headers: headers(), body: JSON.stringify({ message: msg }) });
+    const j = await r.json();
+    $('chatOut').textContent = j.reply || JSON.stringify(j);
+  } catch (e) { $('chatOut').textContent = 'Chat request failed.'; }
+};
+$('callBtn').onclick = async () => {
+  const to = $('callTo').value.trim(), why = $('callWhy').value.trim() || 'dashboard request';
+  if (!to) return;
+  try {
+    const r = await fetch('/v1/calls/outbound?to_number=' + encodeURIComponent(to) + '&purpose=' + encodeURIComponent(why),
+      { method: 'POST', headers: headers() });
+    const j = await r.json();
+    $('callOut').textContent = j.detail || JSON.stringify(j);
+  } catch (e) { $('callOut').textContent = 'Call request failed.'; }
+};
+loadHealth(); loadTasks();
+</script>
+</body>
+</html>
+"""
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard():
+    return DASHBOARD_HTML
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    return DASHBOARD_HTML

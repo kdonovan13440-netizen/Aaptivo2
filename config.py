@@ -6,7 +6,11 @@ class Settings(BaseSettings):
     api_key: str = "change-me-before-deploying"
     database_url: str = "sqlite+aiosqlite:///./aptivo.db"
     groq_api_key: str = ""
-    groq_model: str = "llama-3.3-70b-versatile"
+    groq_model: str = "openai/gpt-oss-120b"
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_phone_number: str = ""
+    public_base_url: str = ""
     workspace_dir: str = "./workspace"
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
