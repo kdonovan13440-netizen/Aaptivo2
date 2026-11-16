@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     twilio_auth_token: str = ""
     twilio_phone_number: str = ""
     public_base_url: str = ""
+    agent_vertical: str = "personal"
+    business_name: str = ""
+    business_hours: str = ""
     workspace_dir: str = "./workspace"
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

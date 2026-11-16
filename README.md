@@ -10,6 +10,26 @@ A modular personal-assistant foundation for voice calls, calendar workflows, tas
 - File operations are restricted to a configured workspace directory.
 - Device actions are queued for a future trusted local companion; the server does **not** silently control a phone or computer.
 
+## Vertical markets
+One deployment can work in one market at a time. Set `AGENT_VERTICAL` in the
+environment to pick it, plus `BUSINESS_NAME` (and optionally `BUSINESS_HOURS`)
+to personalize it, then restart. The phone greeting, the services the agent
+talks about, the questions it asks to book, and its rules all follow the market:
+
+- `personal` — a personal assistant (the default).
+- `home_services` — HVAC, plumbing and handyman companies.
+- `auto_repair` — auto repair shops.
+- `salon_barber` — salons and barbershops.
+- `dental` — dental office front desk (never gives medical advice).
+- `real_estate` — agents and teams (never quotes prices or values).
+- `restaurant` — reservations and takeout (takes requests, never guarantees a table).
+- `resale` — Marketplace and Craigslist sellers (takes offers, never accepts or declines them).
+
+`GET /v1/verticals` lists every market and which one is active. The dashboard
+shows the same. Every market follows the same honesty rules: collect the
+details a human needs, read them back, and present bookings as requests until
+the business or a connected calendar confirms them.
+
 ## Run locally
 1. Copy `.env.example` to `.env` and set a long random `API_KEY`.
 2. Add `GROQ_API_KEY` to enable AI responses.
